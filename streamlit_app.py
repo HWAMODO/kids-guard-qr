@@ -8,7 +8,7 @@ import pandas as pd
 from oauth2client.service_account import ServiceAccountCredentials
 import gspread
 
-APP_VERSION = "seq-4cols-2025-10-02"  # 버전 확인용(사이드바에 표시)
+APP_VERSION = "seq-5cols-note-2025-10-02"  # 버전 확인용(사이드바 표시)
 SEOUL_TZ = pytz.timezone("Asia/Seoul")
 
 # ------------------------------
@@ -30,7 +30,7 @@ SCOPE = [
     "https://spreadsheets.google.com/feeds",
     "https://www.googleapis.com/auth/drive"
 ]
-EXPECTED_HEADER = ["연번", "이름", "근무장소", "근무시간"]  # 최종 요구 포맷
+EXPECTED_HEADER = ["연번", "이름", "근무장소", "근무시간", "특이사항"]  # ★ 특이사항 포함
 
 @st.cache_resource(show_spinner=False)
 def get_worksheet():
@@ -43,35 +43,35 @@ def get_worksheet():
     client = gspread.authorize(creds)
 
     # 3) 스프레드시트/워크시트 열기
-    #    필요 시 open_by_key로 바꾸려면: sh = client.open_by_key(st.secrets["gspread"]["sheet_id"])
+    #    필요 시 open_by_key로: sh = client.open_by_key(st.secrets["gspread"]["sheet_id"])
     sh = client.open("체크인기록")
     try:
         ws = sh.worksheet("Sheet1")
     except gspread.WorksheetNotFound:
         ws = sh.add_worksheet(title="Sheet1", rows=1000, cols=20)
 
-    # 4) 헤더 강제(1행)
+    # 4) 헤더 강제(1행) — 5열로 통일
     header = ws.row_values(1)
-    if header[:4] != EXPECTED_HEADER:
-        ws.update("A1:D1", [EXPECTED_HEADER])
+    if header[:5] != EXPECTED_HEADER:
+        ws.update("A1:E1", [EXPECTED_HEADER])
     return ws
 
-def append_checkin_ordered(name: str, school: str, ts_kst: str):
+def append_checkin_ordered(name: str, school: str, ts_kst: str, note: str):
     """
-    시트에 [연번, 이름, 근무장소, 근무시간] 순서로 기록.
+    시트에 [연번, 이름, 근무장소, 근무시간, 특이사항] 순서로 기록.
     연번 = 현재 A열(연번) 값 개수  (헤더 포함이므로 다음 인덱스)
     """
     ws = get_worksheet()
     # 헤더 보장
     header = ws.row_values(1)
-    if header[:4] != EXPECTED_HEADER:
-        ws.update("A1:D1", [EXPECTED_HEADER])
+    if header[:5] != EXPECTED_HEADER:
+        ws.update("A1:E1", [EXPECTED_HEADER])
 
     # 현재 연번 계산 (A열 값 개수)
-    colA = ws.col_values(1)      # 예: ["연번","1","2",...]
-    next_seq = len(colA)         # 헤더 포함 길이 = 다음 연번
+    colA = ws.col_values(1)   # 예: ["연번","1","2",...]
+    next_seq = len(colA)      # 헤더 포함 길이 = 다음 연번
 
-    row = [next_seq, name.strip(), school, ts_kst]
+    row = [next_seq, name.strip(), school, ts_kst, note.strip()]
     ws.append_row(row)
 
 def fetch_all_records_df():
@@ -79,17 +79,19 @@ def fetch_all_records_df():
     records = ws.get_all_records()  # 1행을 헤더로 인식
     df = pd.DataFrame(records)
 
-    # 새/구 헤더 모두 대응 (과거 잘못 들어간 행 섞여있을 경우 대비)
+    # 새/구 헤더 모두 대응 (과거 잘못 들어간 행 섞여있을 대비)
     rename_map = {
-        "근무시간": "timestamp_kst",
+        "연번": "seq",
         "이름": "name",
         "근무장소": "school",
-        "연번": "seq",
-        # 과거 포맷(예: timestamp_kst/type/name/school) 대응
+        "근무시간": "timestamp_kst",
+        "특이사항": "note",
+        # 구 포맷 대응 키들
         "timestamp_kst": "timestamp_kst",
         "name": "name",
         "school": "school",
         "seq": "seq",
+        "note": "note",
     }
     df = df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns})
 
@@ -136,9 +138,8 @@ if page == "대원 체크인":
                 index=SCHOOL_OPTIONS.index(qp["school"]) if qp.get("school") in SCHOOL_OPTIONS else 0
             )
         with col2:
-            # 특이사항은 UI에만 표시(요청 포맷 유지: 시트에는 저장하지 않음)
             note = st.text_area(
-                "특이사항(시트 미저장)", value=qp.get("note", ""),
+                "특이사항", value=qp.get("note", ""),
                 placeholder="예) 통학로 상황 양호, 주변 공원 인원 증가 등", height=88
             )
             now_kst = datetime.now(SEOUL_TZ)
@@ -151,9 +152,9 @@ if page == "대원 체크인":
                 st.stop()
             ts_kst = datetime.now(SEOUL_TZ).strftime("%Y-%m-%d %H:%M:%S")
             try:
-                # ★ [연번, 이름, 근무장소, 근무시간] 순서로만 저장
-                append_checkin_ordered(name=name.strip(), school=school, ts_kst=ts_kst)
-                # ★ 성공 문구에서 '아동안전지킴이' 제거
+                # ★ [연번, 이름, 근무장소, 근무시간, 특이사항] 순서로 저장
+                append_checkin_ordered(name=name.strip(), school=school, ts_kst=ts_kst, note=note)
+                # 성공 문구(‘아동안전지킴이’ 문구 제거)
                 st.success(f"체크인 완료: {name} · {school}")
                 st.toast("기록되었습니다.", icon="✅")
             except Exception as e:
@@ -195,19 +196,19 @@ elif page == "관리자 요약":
             fdf = df.copy()
 
         # 보기 좋게 컬럼 순서 통일
-        for old, new in [("연번","seq"),("이름","name"),("근무장소","school"),("근무시간","timestamp_kst")]:
+        for old, new in [("연번","seq"),("이름","name"),("근무장소","school"),("근무시간","timestamp_kst"),("특이사항","note")]:
             if old in fdf.columns and new not in fdf.columns:
                 fdf = fdf.rename(columns={old:new})
 
-        show_cols = ["seq","name","school","timestamp_kst"]
+        show_cols = ["seq","name","school","timestamp_kst","note"]
         ordered = [c for c in show_cols if c in fdf.columns]
-        sort_key = ordered[-1] if ordered else (fdf.columns[0] if len(fdf.columns) else None)
+        sort_key = "timestamp_kst" if "timestamp_kst" in fdf.columns else (ordered[-1] if ordered else None)
 
         st.metric("총 체크인 수", len(fdf))
         if sort_key:
-            st.dataframe(fdf.sort_values(sort_key, ascending=False), use_container_width=True)
+            st.dataframe(fdf.sort_values(sort_key, ascending=False)[ordered], use_container_width=True)
         else:
-            st.dataframe(fdf, use_container_width=True)
+            st.dataframe(fdf[ordered] if ordered else fdf, use_container_width=True)
 
         csv = fdf.to_csv(index=False).encode("utf-8-sig")
         st.download_button("CSV 다운로드", data=csv, file_name="checkins_kids.csv", mime="text/csv")
